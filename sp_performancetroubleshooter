@@ -1,0 +1,116 @@
+CREATE PROCEDURE dbo.usp_PerformanceTroubleshooter
+    @ProcedureName SYSNAME = NULL,      -- Name of the stored procedure to troubleshoot
+    @QueryText NVARCHAR(MAX) = NULL     -- Alternatively, a snippet of the query text
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Validate input
+    IF @ProcedureName IS NULL AND @QueryText IS NULL
+    BEGIN
+        RAISERROR('You must provide either a stored procedure name or a query text snippet.', 16, 1);
+        RETURN;
+    END
+
+    DECLARE @object_id INT = NULL;
+
+    IF @ProcedureName IS NOT NULL
+    BEGIN
+        SET @object_id = OBJECT_ID(@ProcedureName);
+        IF @object_id IS NULL
+        BEGIN
+            RAISERROR('Stored procedure "%s" does not exist in the current database.', 16, 1, @ProcedureName);
+            RETURN;
+        END
+    END
+
+    -- Temporary table to store execution stats
+    CREATE TABLE #ExecStats (
+        sql_handle VARBINARY(64),
+        plan_handle VARBINARY(64),
+        query_hash BINARY(8),
+        execution_count BIGINT,
+        total_worker_time BIGINT,
+        total_elapsed_time BIGINT,
+        total_logical_reads BIGINT,
+        total_logical_writes BIGINT,
+        total_physical_reads BIGINT,
+        min_worker_time BIGINT,
+        max_worker_time BIGINT,
+        min_elapsed_time BIGINT,
+        max_elapsed_time BIGINT,
+        creation_time DATETIME,
+        last_execution_time DATETIME,
+        query_text NVARCHAR(MAX),
+        object_id INT,
+        statement_start_offset INT,
+        statement_end_offset INT
+    );
+
+    -- Collect execution statistics
+    INSERT INTO #ExecStats
+    SELECT
+        qs.sql_handle,
+        qs.plan_handle,
+        qs.query_hash,
+        qs.execution_count,
+        qs.total_worker_time,
+        qs.total_elapsed_time,
+        qs.total_logical_reads,
+        qs.total_logical_writes,
+        qs.total_physical_reads,
+        qs.min_worker_time,
+        qs.max_worker_time,
+        qs.min_elapsed_time,
+        qs.max_elapsed_time,
+        qs.creation_time,
+        qs.last_execution_time,
+        SUBSTRING(st.text, (qs.statement_start_offset/2) + 1,
+            ((CASE qs.statement_end_offset
+                WHEN -1 THEN DATALENGTH(st.text)
+                ELSE qs.statement_end_offset
+            END - qs.statement_start_offset)/2) + 1) AS query_text,
+        st.objectid,
+        qs.statement_start_offset,
+        qs.statement_end_offset
+    FROM sys.dm_exec_query_stats qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+    WHERE
+        (@ProcedureName IS NOT NULL AND st.objectid = @object_id)
+        OR (@QueryText IS NOT NULL AND st.text LIKE '%' + @QueryText + '%');
+
+    -- Result Set 1: Execution Statistics Summary
+    PRINT 'Result Set 1: Execution Statistics Summary';
+    SELECT
+        CONVERT(VARCHAR(16), qs.query_hash, 1) AS query_id,
+        qs.query_text,
+        qs.execution_count,
+        qs.total_worker_time / 1000 AS total_cpu_ms,
+        (qs.total_worker_time / qs.execution_count) / 1000 AS avg_cpu_ms,
+        qs.min_worker_time / 1000 AS min_cpu_ms,
+        qs.max_worker_time / 1000 AS max_cpu_ms,
+        qs.total_elapsed_time / 1000 AS total_elapsed_ms,
+        (qs.total_elapsed_time / qs.execution_count) / 1000 AS avg_elapsed_ms,
+        qs.min_elapsed_time / 1000 AS min_elapsed_ms,
+        qs.max_elapsed_time / 1000 AS max_elapsed_ms,
+        qs.total_logical_reads,
+        qs.total_logical_writes,
+        qs.total_physical_reads,
+        qs.creation_time,
+        qs.last_execution_time
+    FROM #ExecStats qs
+    ORDER BY qs.total_worker_time DESC;
+
+    -- Result Set 2: Execution Plans
+    PRINT 'Result Set 2: Execution Plans';
+    SELECT
+        CONVERT(VARCHAR(16), qs.query_hash, 1) AS query_id,
+        qs.query_text,
+        qp.query_plan
+    FROM #ExecStats qs
+    CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp;
+
+    -- Clean up
+    DROP TABLE #ExecStats;
+END
+GO
