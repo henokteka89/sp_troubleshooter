@@ -1,6 +1,6 @@
 USE [admin]
 GO
-/****** Object:  StoredProcedure [dbo].[usp_PerformanceTroubleshooter]    Script Date: 9/22/2024 11:37:20 PM ******/
+/****** Object:  StoredProcedure [dbo].[usp_PerformanceTroubleshooter]    Script Date: 9/23/2024 12:51:16 AM ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
@@ -175,3 +175,43 @@ END
     DROP TABLE if exists #ExecStats;
 	 
 END
+
+/*
+declare @procedurename nvarchar(100) = 'usp_somecomplexity'  
+;WITH QueryDetails AS (
+    SELECT 
+        qsp.query_id,
+        qsp.plan_id,
+        qsp.last_execution_time,
+        qsp.last_compile_start_time,
+        qsp.initial_compile_start_time,
+        qsp.avg_compile_duration / 1000.0 AS avg_compile_duration_ms,
+        qsp.last_compile_duration / 1000.0 AS last_compile_duration_ms,
+        qsp.is_forced_plan,
+        qsp.force_failure_count,
+        qsp.plan_forcing_type_desc,
+        o.name AS proc_name
+    FROM sys.query_store_plan qsp
+    JOIN sys.query_store_query qsq ON qsp.query_id = qsq.query_id
+    JOIN sys.objects o ON qsq.object_id = o.object_id
+    WHERE o.name = @ProcedureName -- Replace with the stored procedure name parameter
+)
+SELECT
+    'Query ID: ' + CAST(query_id AS NVARCHAR(10)) +
+    ', Last Executed: ' + COALESCE(CONVERT(VARCHAR, last_execution_time, 120), 'Never Executed') +
+    ', Initial Compile: ' + COALESCE(CONVERT(VARCHAR, initial_compile_start_time, 120), 'N/A') +
+    ', Last Compile: ' + COALESCE(CONVERT(VARCHAR, last_compile_start_time, 120), 'N/A') +
+    ', Avg Compile Time: ' + CAST(avg_compile_duration_ms AS NVARCHAR(10)) + ' ms' +
+    ', Last Compile Time: ' + CAST(last_compile_duration_ms AS NVARCHAR(10)) + ' ms' +
+    CASE 
+        WHEN is_forced_plan = 1 THEN ', Forced Plan: Yes'
+        ELSE ', Forced Plan: No'
+    END +
+    ', Plan Forcing Type: ' + ISNULL(plan_forcing_type_desc, 'None') +
+    CASE 
+        WHEN force_failure_count > 0 THEN ', Force Failures: ' + CAST(force_failure_count AS NVARCHAR(10))
+        ELSE ''
+    END AS QueryPerformanceSummary
+FROM QueryDetails;
+
+*/
