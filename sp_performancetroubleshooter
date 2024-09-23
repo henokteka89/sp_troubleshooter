@@ -1,8 +1,20 @@
-create or alter PROCEDURE dbo.usp_PerformanceTroubleshooter3
+USE [admin]
+GO
+/****** Object:  StoredProcedure [dbo].[usp_PerformanceTroubleshooter]    Script Date: 9/22/2024 11:37:20 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER   PROCEDURE [dbo].[usp_PerformanceTroubleshooter] 
     @ProcedureName SYSNAME = NULL,      -- Name of the stored procedure to troubleshoot
     @QueryText NVARCHAR(MAX) = NULL,    -- Alternatively, a snippet of the query text
-    @DatabaseName SYSNAME = NULL        -- Name of the database containing the procedure or queries
+    @DatabaseName SYSNAME = NULL,        -- Name of the database containing the procedure or queries
+	@tableanalysis bit = 0
 AS
+/*
+-- test
+	admin.dbo.[usp_PerformanceTroubleshooter]  'usp_somecomplexity', null, 'stackoverflow2013', 1
+*/
 BEGIN
     SET NOCOUNT ON;
 
@@ -124,7 +136,42 @@ BEGIN
     FROM #ExecStats qs
     CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp;
 
-    -- Clean up
-    DROP TABLE #ExecStats;
+If @tableanalysis = 1
+ Begin
+DECLARE @SQL NVARCHAR(MAX);
+
+SET @SQL = '
+USE ' + QUOTENAME(@DatabaseName) + ';
+
+WITH ReferencedTables AS (
+    SELECT 
+        referenced_entity_name AS TableName,
+        referenced_schema_name AS SchemaName,
+        o.object_id AS TableObjectId
+    FROM sys.sql_expression_dependencies d
+    JOIN sys.objects o ON d.referenced_id = o.object_id
+    WHERE referencing_id = OBJECT_ID(''' + QUOTENAME(@DatabaseName) + '.dbo.' + @ProcedureName + ''')
+    AND o.type IN (''U'') -- Only User Tables
+)
+SELECT 
+    t.SchemaName,
+    t.TableName,
+    s.name AS StatsName,
+    sp.last_updated AS LastStatsUpdate,
+    sp.rows AS [RowCount],
+    sp.rows_sampled AS RowsSampled,
+    sp.modification_counter AS ModificationsSinceLastUpdate
+FROM ReferencedTables t
+JOIN sys.stats s ON t.TableObjectId = s.object_id
+CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+ORDER BY t.SchemaName, t.TableName, sp.last_updated DESC;
+';
+
+-- Execute the dynamic SQL string
+EXEC sp_executesql @SQL, N'@ProcedureName NVARCHAR(128)', @ProcedureName;
+
 END
-GO
+    -- Clean up
+    DROP TABLE if exists #ExecStats;
+	 
+END
