@@ -1,6 +1,6 @@
 USE [admin]
 GO
-/****** Object:  StoredProcedure [dbo].[usp_PerformanceTroubleshooter]    Script Date: 9/23/2024 12:51:16 AM ******/
+/****** Object:  StoredProcedure [dbo].[usp_PerformanceTroubleshooter]    Script Date: 9/23/2024 3:44:28 PM ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
@@ -9,11 +9,12 @@ ALTER   PROCEDURE [dbo].[usp_PerformanceTroubleshooter]
     @ProcedureName SYSNAME = NULL,      -- Name of the stored procedure to troubleshoot
     @QueryText NVARCHAR(MAX) = NULL,    -- Alternatively, a snippet of the query text
     @DatabaseName SYSNAME = NULL,        -- Name of the database containing the procedure or queries
-	@tableanalysis bit = 0
+	@tableanalysis bit = 0 ,
+	@querystoreanalysis  bit = 0
 AS
 /*
 -- test
-	admin.dbo.[usp_PerformanceTroubleshooter]  'usp_somecomplexity', null, 'stackoverflow2013', 1
+	admin.dbo.[usp_PerformanceTroubleshooter]  'usp_somecomplexity', null, 'stackoverflow2013', 1, @querystoreanalysis = 1
 */
 BEGIN
     SET NOCOUNT ON;
@@ -171,47 +172,61 @@ ORDER BY t.SchemaName, t.TableName, sp.last_updated DESC;
 EXEC sp_executesql @SQL, N'@ProcedureName NVARCHAR(128)', @ProcedureName;
 
 END
+
+IF @querystoreanalysis = 1
+BEGIN
+    DECLARE @SQL1 NVARCHAR(MAX);
+
+    -- Build the dynamic SQL query for Query Store analysis
+    SET @SQL1 = '
+    USE ' + QUOTENAME(@DatabaseName) + ';
+
+    WITH QueryDetails AS (
+        SELECT 
+            qsp.query_id,
+            qsp.plan_id,
+            qsp.last_execution_time,
+            qsp.last_compile_start_time,
+            qsp.initial_compile_start_time,
+            qsp.avg_compile_duration / 1000.0 AS avg_compile_duration_ms,
+            qsp.last_compile_duration / 1000.0 AS last_compile_duration_ms,
+            qsp.is_forced_plan,
+            qsp.force_failure_count,
+            qsp.plan_forcing_type_desc,
+            o.name AS proc_name
+        FROM sys.query_store_plan qsp
+        JOIN sys.query_store_query qsq ON qsp.query_id = qsq.query_id
+        JOIN sys.objects o ON qsq.object_id = o.object_id
+        WHERE o.name = @ProcedureName
+    )
+    SELECT
+        ''Query ID: '' + CAST(query_id AS NVARCHAR(10)) +
+        '', Last Executed: '' + COALESCE(CONVERT(VARCHAR, last_execution_time, 120), ''Never Executed'') +
+        '', Initial Compile: '' + COALESCE(CONVERT(VARCHAR, initial_compile_start_time, 120), ''N/A'') +
+        '', Last Compile: '' + COALESCE(CONVERT(VARCHAR, last_compile_start_time, 120), ''N/A'') +
+        '', Avg Compile Time: '' + CAST(avg_compile_duration_ms AS NVARCHAR(10)) + '' ms'' +
+        '', Last Compile Time: '' + CAST(last_compile_duration_ms AS NVARCHAR(10)) + '' ms'' +
+        CASE 
+            WHEN is_forced_plan = 1 THEN '', Forced Plan: Yes''
+            ELSE '', Forced Plan: No''
+        END +
+        '', Plan Forcing Type: '' + ISNULL(plan_forcing_type_desc, ''None'') +
+        CASE 
+            WHEN force_failure_count > 0 THEN '', Force Failures: '' + CAST(force_failure_count AS NVARCHAR(10))
+            ELSE ''''
+        END AS QueryPerformanceSummary
+    FROM QueryDetails;
+    ';
+
+    -- Execute the dynamic SQL in the specified database
+    EXEC sp_executesql @SQL1, N'@ProcedureName NVARCHAR(128)', @ProcedureName;
+END;
+
+ 
+
     -- Clean up
     DROP TABLE if exists #ExecStats;
 	 
 END
 
-/*
-declare @procedurename nvarchar(100) = 'usp_somecomplexity'  
-;WITH QueryDetails AS (
-    SELECT 
-        qsp.query_id,
-        qsp.plan_id,
-        qsp.last_execution_time,
-        qsp.last_compile_start_time,
-        qsp.initial_compile_start_time,
-        qsp.avg_compile_duration / 1000.0 AS avg_compile_duration_ms,
-        qsp.last_compile_duration / 1000.0 AS last_compile_duration_ms,
-        qsp.is_forced_plan,
-        qsp.force_failure_count,
-        qsp.plan_forcing_type_desc,
-        o.name AS proc_name
-    FROM sys.query_store_plan qsp
-    JOIN sys.query_store_query qsq ON qsp.query_id = qsq.query_id
-    JOIN sys.objects o ON qsq.object_id = o.object_id
-    WHERE o.name = @ProcedureName -- Replace with the stored procedure name parameter
-)
-SELECT
-    'Query ID: ' + CAST(query_id AS NVARCHAR(10)) +
-    ', Last Executed: ' + COALESCE(CONVERT(VARCHAR, last_execution_time, 120), 'Never Executed') +
-    ', Initial Compile: ' + COALESCE(CONVERT(VARCHAR, initial_compile_start_time, 120), 'N/A') +
-    ', Last Compile: ' + COALESCE(CONVERT(VARCHAR, last_compile_start_time, 120), 'N/A') +
-    ', Avg Compile Time: ' + CAST(avg_compile_duration_ms AS NVARCHAR(10)) + ' ms' +
-    ', Last Compile Time: ' + CAST(last_compile_duration_ms AS NVARCHAR(10)) + ' ms' +
-    CASE 
-        WHEN is_forced_plan = 1 THEN ', Forced Plan: Yes'
-        ELSE ', Forced Plan: No'
-    END +
-    ', Plan Forcing Type: ' + ISNULL(plan_forcing_type_desc, 'None') +
-    CASE 
-        WHEN force_failure_count > 0 THEN ', Force Failures: ' + CAST(force_failure_count AS NVARCHAR(10))
-        ELSE ''
-    END AS QueryPerformanceSummary
-FROM QueryDetails;
-
-*/
+ 
