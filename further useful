@@ -1,0 +1,97 @@
+-- All the indexes, operatorations etc used by the stored proc
+
+WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
+SELECT
+    DB_NAME(qp.dbid) AS DatabaseName,
+    OBJECT_NAME(qp.objectid, qp.dbid) AS ProcName,
+    cp.usecounts AS PlanUseCount,
+    i.value('(@NodeId)[1]', 'INT') AS NodeId,
+    i.value('(@Parent)[1]', 'INT') AS ParentNodeId,
+    i.value('(@PhysicalOp)[1]', 'VARCHAR(50)') AS PhysicalOperation,
+    i.value('(@LogicalOp)[1]', 'VARCHAR(50)') AS LogicalOperation,
+    i.value('(.//Object/@Index)[1]', 'VARCHAR(100)') AS IndexName,
+    i.value('(.//Object/@Schema)[1]', 'VARCHAR(50)') + '.' + i.value('(.//Object/@Table)[1]', 'VARCHAR(100)') AS TableName,
+    i.value('(.//Predicate/ScalarOperator/@ScalarString)[1]', 'VARCHAR(MAX)') AS Predicate,
+    i.value('(@EstimateRows)[1]', 'FLOAT') AS EstimatedRows,
+    i.value('(@ActualRows)[1]', 'FLOAT') AS ActualRows
+FROM sys.dm_exec_cached_plans cp
+CROSS APPLY sys.dm_exec_query_plan(cp.plan_handle) qp
+CROSS APPLY qp.query_plan.nodes('//RelOp[.//Object[@Index]]') t(i)
+WHERE OBJECT_NAME(qp.objectid, qp.dbid) = 'usp_idtitleavgvoteid';
+
+--- Breaking to get indexes used by the stored proc
+WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
+SELECT
+     DB_NAME(qp.dbid) AS DatabaseName
+	,i.value('(IndexScan/Object/@Schema)[1]', 'VARCHAR(50)') + '.' + i.value('(IndexScan/Object/@Table)[1]', 'VARCHAR(100)') AS TableName
+    ,OBJECT_NAME(qp.objectid, qp.dbid) AS ProcName 
+    ,i.value('(IndexScan/Object/@Index)[1]', 'VARCHAR(100)') AS IndexusedbyProc 
+    ,i.value('(@PhysicalOp)[1]', 'VARCHAR(50)') AS PhysicalOperation
+    ,i.value('(@LogicalOp)[1]', 'VARCHAR(50)') AS LogicalOperation
+FROM sys.dm_exec_cached_plans cp
+CROSS APPLY sys.dm_exec_query_plan(cp.plan_handle) qp
+CROSS APPLY qp.query_plan.nodes('//RelOp[IndexScan or IndexSeek]') t(i)
+WHERE OBJECT_NAME(qp.objectid, qp.dbid) = 'usp_idtitleavgvoteid'; 
+ 
+---same
+WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
+SELECT
+     DB_NAME(qp.dbid) AS DatabaseName
+	,i.value('(IndexScan/Object/@Schema)[1]', 'VARCHAR(50)') + '.' + i.value('(IndexScan/Object/@Table)[1]', 'VARCHAR(100)') AS TableName
+    ,OBJECT_NAME(qp.objectid, qp.dbid) AS ProcName 
+   , REPLACE(REPLACE(i.value('(IndexScan/Object/@Index)[1]', 'VARCHAR(100)'), '[', ''), ']', '') AS IndexName   -- Remove brackets
+    ,i.value('(@PhysicalOp)[1]', 'VARCHAR(50)') AS PhysicalOperation
+    ,i.value('(@LogicalOp)[1]', 'VARCHAR(50)') AS LogicalOperation
+FROM sys.dm_exec_cached_plans cp
+CROSS APPLY sys.dm_exec_query_plan(cp.plan_handle) qp
+CROSS APPLY qp.query_plan.nodes('//RelOp[IndexScan or IndexSeek]') t(i)
+WHERE OBJECT_NAME(qp.objectid, qp.dbid) = 'usp_idtitleavgvoteid'; 
+--usp_idtitleavgvoteid
+
+--- my attempt to include index fragmentation information 
+DROP TABLE IF EXISTS #indexusedinformation;
+DECLARE @procname NVARCHAR(250) = 'usp_idtitleavgvoteid';
+ 
+WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
+SELECT
+    DB_NAME(qp.dbid) AS DatabaseName,
+    OBJECT_NAME(qp.objectid, qp.dbid) AS ProcName,
+    i.value('(@PhysicalOp)[1]', 'VARCHAR(50)') AS PhysicalOperation,
+    i.value('(@LogicalOp)[1]', 'VARCHAR(50)') AS LogicalOperation,
+    REPLACE(REPLACE(i.value('(IndexScan/Object/@Index)[1]', 'VARCHAR(100)'), '[', ''), ']', '') AS IndexName,  -- Remove brackets
+    i.value('(IndexScan/Object/@Schema)[1]', 'VARCHAR(50)') AS SchemaName,
+    i.value('(IndexScan/Object/@Table)[1]', 'VARCHAR(100)') AS TableName
+INTO #indexusedinformation
+FROM sys.dm_exec_cached_plans cp
+CROSS APPLY sys.dm_exec_query_plan(cp.plan_handle) qp
+CROSS APPLY qp.query_plan.nodes('//RelOp[IndexScan or IndexSeek]') t(i)
+WHERE OBJECT_NAME(qp.objectid, qp.dbid) = @procname;
+
+-- Query index information with fragmentation, recommendations, and commands
+SELECT --DISTINCT 
+    x.ProcName, 
+    x.PhysicalOperation AS Operator, 
+    x.IndexName AS IndexUsedbyProc, 
+    x.SchemaName + '.' + x.TableName AS TableName,
+    ps.avg_fragmentation_in_percent,
+    CASE 
+        WHEN ps.avg_fragmentation_in_percent < 10 THEN 'No action needed'
+        WHEN ps.avg_fragmentation_in_percent BETWEEN 10 AND 30 THEN 'Reorganize index'
+        WHEN ps.avg_fragmentation_in_percent > 30 THEN 'Rebuild index'
+    END AS RecommendedAction,
+    CASE 
+        WHEN ps.avg_fragmentation_in_percent BETWEEN 10 AND 30 THEN 
+            'ALTER INDEX [' + i.name + '] ON ' + x.SchemaName + '.' + x.TableName + ' REORGANIZE;'
+        WHEN ps.avg_fragmentation_in_percent > 30 THEN 
+            'ALTER INDEX [' + i.name + '] ON ' + x.SchemaName + '.' + x.TableName + ' REBUILD;'
+        ELSE 'N/A'
+    END AS RebuildOrReorganizeCommand,
+    'SELECT * FROM sys.indexes WHERE object_id = OBJECT_ID(''' + x.SchemaName + '.' + x.TableName + ''') AND name = ''' + i.name + ''';' AS IndexDetailsCommand
+FROM #indexusedinformation x
+JOIN sys.indexes i ON i.name = x.IndexName
+JOIN sys.dm_db_index_physical_stats(DB_ID(), NULL, NULL, NULL, 'LIMITED') AS ps 
+    ON i.object_id = ps.object_id AND i.index_id = ps.index_id
+WHERE ps.avg_fragmentation_in_percent <> 0;
+
+DROP TABLE IF EXISTS #indexusedinformation;
+ 
