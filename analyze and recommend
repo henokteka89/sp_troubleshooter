@@ -1,0 +1,61 @@
+WITH XMLNAMESPACES (DEFAULT 'http://schemas.microsoft.com/sqlserver/2004/07/showplan')
+SELECT
+    -- Basic Information
+    DB_NAME(qp.dbid) AS DatabaseName,
+    OBJECT_NAME(qp.objectid, qp.dbid) AS ProcName,
+    cp.usecounts AS PlanUseCount,
+    i.value('(@NodeId)[1]', 'INT') AS NodeId,
+    i.value('(@Parent)[1]', 'INT') AS ParentNodeId,
+    
+    -- Operation Details
+    i.value('(@PhysicalOp)[1]', 'VARCHAR(50)') AS PhysicalOperation,
+    i.value('(@LogicalOp)[1]', 'VARCHAR(50)') AS LogicalOperation,
+    i.value('(.//Object/@Index)[1]', 'VARCHAR(100)') AS IndexName,
+    i.value('(.//Object/@Schema)[1]', 'VARCHAR(50)') + '.' + i.value('(.//Object/@Table)[1]', 'VARCHAR(100)') AS TableName,
+    i.value('(.//Predicate/ScalarOperator/@ScalarString)[1]', 'VARCHAR(MAX)') AS Predicate,
+    
+    -- Performance Metrics
+    i.value('(@EstimateRows)[1]', 'FLOAT') AS EstimatedRows,
+    i.value('(@ActualRows)[1]', 'FLOAT') AS ActualRows,
+    i.value('(@EstimateIO)[1]', 'FLOAT') AS EstimatedIO,
+    i.value('(@EstimateCPU)[1]', 'FLOAT') AS EstimatedCPU,
+    i.value('(@AvgRowSize)[1]', 'FLOAT') AS AvgRowSize,
+    i.value('(@TotalSubtreeCost)[1]', 'FLOAT') AS SubtreeCost,
+    
+    -- Additional Metrics
+    i.value('(@Parallel)[1]', 'VARCHAR(5)') AS IsParallel,
+    i.value('(@EstimateRebinds)[1]', 'FLOAT') AS EstimateRebinds,
+    i.value('(@EstimateRewinds)[1]', 'FLOAT') AS EstimateRewinds,
+    
+    -- Analysis and Insights
+    CASE
+        WHEN i.value('(@PhysicalOp)[1]', 'VARCHAR(50)') IN ('Table Scan', 'Clustered Index Scan', 'Index Scan') THEN 'Scan'
+        WHEN i.value('(@PhysicalOp)[1]', 'VARCHAR(50)') IN ('Index Seek', 'Clustered Index Seek') THEN 'Seek'
+        ELSE 'Other'
+    END AS OperationType,
+    
+    CASE
+        WHEN i.value('(@PhysicalOp)[1]', 'VARCHAR(50)') IN ('Table Scan', 'Clustered Index Scan', 'Index Scan')
+             AND i.value('(.//Object/@IndexKind)[1]', 'VARCHAR(50)') != 'NonClustered'
+            THEN 'Potential Issue: Scan operation detected. Consider indexing or query rewrite.'
+        WHEN i.value('(@PhysicalOp)[1]', 'VARCHAR(50)') IN ('Index Seek', 'Clustered Index Seek')
+            THEN 'Good: Efficient index seek operation.'
+        ELSE 'Review: Non-index operation.'
+    END AS PerformanceInsight,
+    
+    CASE
+        WHEN i.value('(@ActualRows)[1]', 'FLOAT') IS NOT NULL
+             AND ABS(i.value('(@EstimateRows)[1]', 'FLOAT') - i.value('(@ActualRows)[1]', 'FLOAT')) > (0.1 * i.value('(@EstimateRows)[1]', 'FLOAT'))
+            THEN 'Warning: Significant discrepancy between estimated and actual rows. Consider updating statistics.'
+        ELSE 'OK'
+    END AS RowEstimateAccuracy,
+    
+    CASE
+        WHEN i.value('(@TotalSubtreeCost)[1]', 'FLOAT') > 1.0
+            THEN 'High-cost operation detected. Optimize if possible.'
+        ELSE 'Cost within acceptable range.'
+    END AS CostAnalysis
+FROM sys.dm_exec_cached_plans cp
+CROSS APPLY sys.dm_exec_query_plan(cp.plan_handle) qp
+CROSS APPLY qp.query_plan.nodes('//RelOp[.//Object[@Index]]') t(i)
+WHERE OBJECT_NAME(qp.objectid, qp.dbid) = 'usp_idtitleavgvoteid';
