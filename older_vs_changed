@@ -1,1 +1,36 @@
 
+If @tableanalysis = 1
+ Begin
+DECLARE @SQL NVARCHAR(MAX);
+
+SET @SQL = '
+USE ' + QUOTENAME(@DatabaseName) + ';
+
+WITH ReferencedTables AS (
+    SELECT 
+        referenced_entity_name AS TableName,
+        referenced_schema_name AS SchemaName,
+        o.object_id AS TableObjectId
+    FROM sys.sql_expression_dependencies d
+    JOIN sys.objects o ON d.referenced_id = o.object_id
+    WHERE referencing_id = OBJECT_ID(''' + QUOTENAME(@DatabaseName) + '.dbo.' + @ProcedureName + ''')
+    AND o.type IN (''U'') -- Only User Tables
+)
+SELECT 
+    t.SchemaName,
+    t.TableName,
+    s.name AS StatsName,
+    sp.last_updated AS LastStatsUpdate,
+    sp.rows AS [RowCount],
+    sp.rows_sampled AS RowsSampled,
+    sp.modification_counter AS ModificationsSinceLastUpdate
+FROM ReferencedTables t
+JOIN sys.stats s ON t.TableObjectId = s.object_id
+CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+ORDER BY t.SchemaName, t.TableName, sp.last_updated DESC;
+';
+
+-- Execute the dynamic SQL string
+EXEC sp_executesql @SQL, N'@ProcedureName NVARCHAR(128)', @ProcedureName;
+
+END
